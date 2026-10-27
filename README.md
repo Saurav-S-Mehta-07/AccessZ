@@ -407,7 +407,7 @@ flowchart TB
   Repo[Git repository]
   subgraph RenderBuild[Render builds]
     StaticBuild[Frontend Static Site build<br/>Vite assets]
-    ApiBuild[Backend Node service build<br/>npm workspace install]
+    ApiBuild[Backend Docker image build<br/>workspace install]
     BrowserInstall[Backend postinstall<br/>Playwright Chromium in node_modules]
     ApiBuild --> BrowserInstall
   end
@@ -428,15 +428,19 @@ flowchart TB
   Chromium -->|restricted public HTTP(S)| Internet[Authorized public target]
 ```
 
-For a backend service whose Root Directory is the repository root, configure:
+The backend needs Chromium's Linux system libraries as well as the browser binary. Render's native build pipeline runs separately from the deployed runtime, so installing operating-system packages only during a native build does not guarantee they exist in the service instance. This repository uses a Dockerfile so the browser, its Linux libraries, and the Node service are built into one runtime image.
 
-| Render setting | Value |
-| --- | --- |
-| Build command | `npm ci && npm run build --workspace backend` |
-| Start command | `npm start --workspace backend` |
-| Required environment | `FRONTEND_ORIGIN=https://accessz-1.onrender.com`, `MONGODB_URI`, `SESSION_SECRET`; set `GROQ_API_KEY` only if enabling AI suggestions. |
+In the Render Dashboard, set the backend service runtime to **Docker**, keep the Docker context at the repository root, and set the Dockerfile path to `Dockerfile`. Render's Docker runtime builds from that file; it does not use a separate Build Command. The Dockerfile's dependency-install step is:
 
-The backend workspace's `postinstall` hook runs Playwright's Chromium installer into `node_modules/playwright-core/.local-browsers`. Its start wrapper sets `PLAYWRIGHT_BROWSERS_PATH=0`, so the running Render process finds the browser downloaded during build. Keep npm lifecycle scripts enabled; `npm install --ignore-scripts` skips this setup. The project-local browser install pattern is documented by [Playwright](https://playwright.dev/docs/browsers).
+```dockerfile
+RUN npm ci --workspace backend --include-workspace-root=false --omit=dev
+```
+
+The backend workspace `postinstall` invokes the version-matched Playwright installer, which places Chromium under the app's `node_modules`. The Dockerfile then runs `npm exec --workspace backend playwright install-deps chromium` as root to install Debian runtime libraries and performs a one-time headless launch check during image build. The browser, libraries, and service therefore ship in the same runtime image. The start command is `npm start --workspace backend`. No `render.yaml` exists, so Runtime and Dockerfile Path need to be set on the existing backend service in Render.
+
+The backend's startup diagnostic checks the executable path and logs a clear message without launching Chromium. The `/api/health` response exposes scanner status and a safe diagnostic message. A missing file is reported as Chromium unavailable; a browser that exists but cannot start is reported separately, with a Linux-library hint for `ENOENT`. Playwright documents the compatible browser installer and Linux dependency flag in its [browser setup guide](https://playwright.dev/docs/browsers).
+
+Keep the existing backend environment variables (`FRONTEND_ORIGIN`, `MONGODB_URI`, `SESSION_SECRET`, and optionally `GROQ_API_KEY`) on the Render service when switching its runtime. The app continues to use Render's `PORT` and the existing workspace start script.
 
 For a Render Static Site using React Router, add a dashboard rewrite rule:
 
@@ -453,8 +457,8 @@ Set the backend's `FRONTEND_ORIGIN` to the exact frontend origin. Configure the 
 | Symptom | Likely cause | Checks and safe action |
 | --- | --- | --- |
 | Refresh/direct link to `/audits/new` returns 404 | Static Site is looking for a file at the React route. | Add the `/*` → `/index.html` **Rewrite** rule to the frontend Static Site. Confirm the browser keeps `/audits/new` after refresh. |
-| Health reports scanner unavailable or scan says Chromium is not installed | Browser install lifecycle was skipped, build did not run npm install, or the start command bypasses the project wrapper. | Deploy with normal npm lifecycle scripts; use the backend workspace install/build and start commands above. Check build logs for the Playwright Chromium download. |
-| Browser executable exists but will not launch | The runtime may lack OS libraries required by Chromium or the custom executable path is invalid. | Review Render logs for the missing shared library; use a compatible Render runtime or a maintained Playwright container with required Linux dependencies. Set `CHROMIUM_EXECUTABLE_PATH` only to a compatible installed binary. |
+| Health reports scanner unavailable or scan says Chromium is not installed | The deployed image was not built from the backend Dockerfile, or `CHROMIUM_EXECUTABLE_PATH` points to a missing file. | Configure the existing Render API service to use Docker with the repository-root `Dockerfile`; check the startup diagnostic and build logs. Clear an obsolete custom browser path. |
+| Browser executable exists but will not launch | Runtime OS libraries or execute permissions are missing. | Use the Docker image built from the repository Dockerfile; it installs Linux dependencies with Playwright and runs the service with the same browser path. Review the startup and request diagnostics. |
 | Health reports database `not_configured` or `unavailable` | `MONGODB_URI` is absent, malformed, or unreachable; Atlas network/user configuration may be wrong. | Check the backend environment and Atlas network policy. Do not print the full URI in logs or support tickets. |
 | Auth returns `503` in production | MongoDB is unreachable, the session secret is missing/too short, or the frontend origin is not a valid HTTPS origin. | Configure `MONGODB_URI`, a unique `SESSION_SECRET` of at least 32 characters, and the exact HTTPS `FRONTEND_ORIGIN`. |
 | Browser shows CORS, failed fetch, or auth request errors | Wrong frontend API base or allowed Origin; frontend/API may be on different sites and third-party cookies may be restricted. | Check build-time `VITE_API_BASE_URL`, backend `FRONTEND_ORIGIN`, HTTPS origins, and browser cookie policies. Keep the API base ending in `/api`. |

@@ -4,7 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import { ZodError } from "zod";
 import { htmlAuditRequestSchema, urlAuditRequestSchema } from "./schemas.js";
-import { getScannerStatus, scanAudit, scannerConfiguration } from "./scanner.js";
+import { getScannerDiagnostics, scanAudit, scannerConfiguration } from "./scanner.js";
 import { applyRepairSchema, controlledArtifactSchema, repairInputSchema, RepairError } from "./repairs/repairEngine.js";
 import { repairService as defaultRepairService } from "./repairs/repairService.js";
 import { createVerificationRecord, freezeSnapshot } from "./verification/engine.js";
@@ -175,7 +175,8 @@ export function createApp({
   }
 
   app.get("/api/health", async (request, response) => {
-    const scannerStatus = await getScannerStatus();
+    const scannerDiagnostic = await getScannerDiagnostics();
+    const scannerStatus = scannerDiagnostic.status;
     const database = getDatabaseStatus();
     response.json({
       requestId: request.requestId,
@@ -192,6 +193,7 @@ export function createApp({
         engine: "Playwright + Chromium + axe-core",
         wcagLevels: Object.keys(scannerConfiguration.tags),
         status: scannerStatus,
+        diagnostic: scannerDiagnostic.message,
       },
     });
   });

@@ -583,11 +583,17 @@ async function performScan(input, { signal, requestId }) {
     }
     if (error instanceof ScanError) throw error;
     logScannerFailure(requestId, phase, error);
-    if (error.message?.includes("Executable doesn't exist") || error.code === "ENOENT") {
-      throw new ScanError("CHROMIUM_UNAVAILABLE", "Chromium is not installed. Run the documented Playwright browser setup.", 503);
+    if (error.message?.includes("Executable doesn't exist")) {
+      const message = process.env.CHROMIUM_EXECUTABLE_PATH
+        ? "CHROMIUM_EXECUTABLE_PATH points to a missing Chromium executable. Clear it or set it to a valid executable."
+        : "Playwright cannot find its Chromium executable. Rebuild the backend Docker image so Chromium is installed into the runtime image.";
+      throw new ScanError("CHROMIUM_UNAVAILABLE", message, 503);
     }
     if (phase === "browser_launch") {
-      throw new ScanError("CHROMIUM_LAUNCH_FAILED", "The isolated Chromium browser could not start. Check the server's browser installation and permissions.", 503);
+      const message = error.code === "ENOENT"
+        ? "Chromium is installed but could not start; a required Linux shared library may be missing. Build the backend with Playwright's --with-deps Chromium install."
+        : "Chromium is installed but could not start. Check the executable permissions and server logs.";
+      throw new ScanError("CHROMIUM_LAUNCH_FAILED", message, 503);
     }
     throw new ScanError("SCANNER_FAILED", "The accessibility engine could not complete the scan.", 502);
   } finally {
@@ -640,14 +646,34 @@ export function sanitizePreviewHtml(html) {
   return sanitizeHtml(html);
 }
 
-export async function getScannerStatus() {
+export async function getScannerDiagnostics() {
   try {
     await verifyAxeInstallation();
-    await access(browserExecutablePath() ?? chromium.executablePath(), fsConstants.R_OK);
-    return "available";
   } catch {
-    return "unavailable";
+    return {
+      status: "unavailable",
+      message: "axe-core is unavailable. Confirm the backend production dependencies were installed from the lockfile.",
+    };
   }
+
+  const customExecutable = browserExecutablePath();
+  const executable = customExecutable ?? chromium.executablePath();
+  const accessMode = fsConstants.R_OK | (process.platform === "win32" ? 0 : fsConstants.X_OK);
+  try {
+    await access(executable, accessMode);
+    return { status: "available", message: null };
+  } catch {
+    return {
+      status: "unavailable",
+      message: customExecutable
+        ? "CHROMIUM_EXECUTABLE_PATH does not point to a readable, executable Chromium binary. Clear it to use Playwright's bundled browser."
+        : "Playwright cannot find its Chromium executable. Build the backend from the repository Dockerfile so the matching browser is included in the runtime image.",
+    };
+  }
+}
+
+export async function getScannerStatus() {
+  return (await getScannerDiagnostics()).status;
 }
 
 export function getScannerRuntime() {

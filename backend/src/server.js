@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { authService } from "./auth.js";
 import { connectDatabase, disconnectDatabase } from "./database.js";
+import { getScannerDiagnostics } from "./scanner.js";
 import { pathToFileURL } from "node:url";
 
 export function createApiServer({
@@ -16,6 +17,14 @@ export function createApiServer({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const scannerDiagnostic = await getScannerDiagnostics();
+  if (scannerDiagnostic.status === "available") {
+    console.info("Playwright startup check: Chromium executable is available.");
+  } else {
+    console.error(`Playwright startup check failed: ${scannerDiagnostic.message}`);
+    throw new Error(`Backend startup blocked: ${scannerDiagnostic.message}`);
+  }
+
   const database = await connectDatabase();
   if (!database.connected) {
     console.warn(`AccessZ persistence status: ${database.status}. Authentication and protected API routes remain unavailable until MongoDB is configured.`);
