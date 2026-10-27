@@ -6,12 +6,12 @@ import { pathToFileURL } from "node:url";
 export function createApiServer({
   port = Number(process.env.PORT ?? 3001),
   app = createApp(),
-  onListening = (address) => console.info(`AccessZ API listening on http://127.0.0.1:${address.port}`),
+  onListening = (address) => console.info(`AccessZ API listening on http://0.0.0.0:${address.port}`),
 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error("PORT must be an integer between 0 and 65535.");
   }
-  const server = app.listen(port, "127.0.0.1", () => onListening(server.address()));
+  const server = app.listen(port, "0.0.0.0", () => onListening(server.address()));
   return server;
 }
 
