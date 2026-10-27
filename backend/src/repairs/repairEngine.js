@@ -423,8 +423,9 @@ export function deterministicProposal({ ruleId, originalCode, nearbyLabelText, s
 export function normalizeProposal(value, originalCode, ruleId) {
   const parsed = proposalSchema.safeParse(value);
   if (!parsed.success) throw new RepairError("INVALID_SUGGESTION", "The repair suggestion did not match the required safe output format.", 502);
+  // Every AI-generated patch is a proposal for a person to review, even if the model says otherwise.
+  parsed.data.manualReviewRequired = true;
   if (ruleId === "image-alt" && parsed.data.proposedCode !== originalCode) {
-    parsed.data.manualReviewRequired = true;
     parsed.data.assumptions = [...new Set([...parsed.data.assumptions, "Verify that this alternative text accurately communicates the image's meaning in context."])].slice(0, 8);
   }
   if (parsed.data.proposedCode === originalCode) {
