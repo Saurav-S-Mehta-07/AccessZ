@@ -1,5 +1,4 @@
 # AccessZ
-
 AccessZ is a light-first accessibility auditing workspace for developers, with an optional dark theme. It includes a responsive React application and an Express API that runs real Playwright/Chromium + axe-core scans against public URLs or sanitized HTML snippets. Sample HTML is clearly identified and scanned by the same real engine; no demo findings are seeded.
 
 Automated checks are useful evidence, not proof of full WCAG conformance. Manual review remains necessary.
