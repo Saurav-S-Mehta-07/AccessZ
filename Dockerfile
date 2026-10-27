@@ -17,7 +17,8 @@ RUN npm run build --workspace backend \
     && PLAYWRIGHT_BROWSERS_PATH=0 node --input-type=module -e "const { chromium } = await import('playwright'); const browser = await chromium.launch({ headless: true }); console.log('Chromium image check:', browser.version()); await browser.close();"
 
 ENV NODE_ENV=production
+ENV PLAYWRIGHT_BROWSERS_PATH=0
 
 USER node
 
-CMD ["npm", "start", "--workspace", "backend"]
+CMD ["node", "backend/src/server.js"]
