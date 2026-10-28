@@ -105,6 +105,9 @@ function getFindingGuidance(violation) {
 
 function summarizeHtmlPatch(originalCode, proposedCode) {
   const readElement = (markup) => {
+    if (/^\s*<html\b/i.test(markup)) {
+      return new DOMParser().parseFromString(`${markup}<head></head><body></body></html>`, "text/html").documentElement;
+    }
     const template = document.createElement("template");
     template.innerHTML = markup;
     return template.content.children.length === 1 ? template.content.firstElementChild : null;
@@ -168,6 +171,10 @@ function buildHtmlDiff(originalCode, proposedCode) {
 
 function repairPreviewNote(repair) {
   if (!repair?.proposedCode) return "";
+  if (["html-has-lang", "html-lang-valid"].includes(repair.violationId)) {
+    const parsed = new DOMParser().parseFromString(`${repair.proposedCode}<head></head><body></body></html>`, "text/html");
+    return `Document language: ${parsed.documentElement.lang || "missing"}${repair.demoContent ? " · demo value, confirm the actual language" : ""}`;
+  }
   const template = document.createElement("template");
   template.innerHTML = repair.proposedCode;
   const element = template.content.firstElementChild;
@@ -186,18 +193,37 @@ function repairPreviewNote(repair) {
     const text = element.tagName === "INPUT" ? element.value : element.textContent.trim();
     return text ? `Visible control text: ${text} · Accessible name: ${element.getAttribute("aria-label") ?? text}` : "The control name needs human review.";
   }
-  if (["html-has-lang", "html-lang-valid"].includes(repair.violationId)) {
-    return `Document language: ${element.getAttribute("lang") ?? "missing"}${repair.demoContent ? " · demo value, confirm the actual language" : ""}`;
-  }
   return "";
 }
 
-function buildProposedArtifactPreview(sourceHtml, repair) {
+function combineArtifactCss(sourceHtml, css = "") {
+  if (!css) return sourceHtml;
+  const document = new DOMParser().parseFromString(sourceHtml, "text/html");
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.head.append(style);
+  return `<!doctype html>${document.documentElement.outerHTML}`;
+}
+
+function buildProposedArtifactPreview(sourceHtml, repair, additionalCss = "") {
   if (!sourceHtml || !repair?.selector || !repair.originalCode || !repair.proposedCode || repair.originalCode === repair.proposedCode) return null;
   try {
     const previewDocument = new DOMParser().parseFromString(sourceHtml, "text/html");
+    if (additionalCss) {
+      const style = previewDocument.createElement("style");
+      style.textContent = additionalCss;
+      previewDocument.head.append(style);
+    }
     const targets = previewDocument.querySelectorAll(repair.selector);
-    if (targets.length !== 1 || targets[0].outerHTML !== repair.originalCode) return null;
+    if (targets.length !== 1) return null;
+    if (["html-has-lang", "html-lang-valid"].includes(repair.violationId)) {
+      const serializedTag = targets[0].cloneNode(false).outerHTML;
+      if (serializedTag.slice(0, serializedTag.indexOf(">") + 1) !== repair.originalCode) return null;
+      const proposal = new DOMParser().parseFromString(`${repair.proposedCode}<head></head><body></body></html>`, "text/html");
+      previewDocument.documentElement.setAttribute("lang", proposal.documentElement.lang);
+      return `<!doctype html>${previewDocument.documentElement.outerHTML}`;
+    }
+    if (targets[0].outerHTML !== repair.originalCode) return null;
 
     const replacement = previewDocument.createElement("template");
     replacement.innerHTML = repair.proposedCode.trim();
@@ -420,7 +446,7 @@ function RuleEvidence({ rule, kind }) {
 function buildPreviewDocument(sanitizedHtml) {
   const nonce = globalThis.crypto?.randomUUID?.().replaceAll("-", "") ?? `${Date.now()}${Math.random().toString(36).slice(2)}`;
   const encodedMarkup = JSON.stringify(sanitizedHtml).replaceAll("<", "\\u003c");
-  const controller = `const source=${encodedMarkup};document.body.innerHTML=source;window.addEventListener("message",function(event){if(event.source!==window.parent||event.data?.type!=="a11ypilot-highlight"||typeof event.data.selector!=="string")return;try{const target=document.querySelector(event.data.selector);if(!target)return;target.scrollIntoView({block:"center",behavior:"smooth"});target.style.setProperty("outline","3px solid #a89dff","important");target.style.setProperty("outline-offset","3px","important");setTimeout(()=>{target.style.removeProperty("outline");target.style.removeProperty("outline-offset")},3500)}catch{}},false);`;
+  const controller = `const source=${encodedMarkup};const parsed=new DOMParser().parseFromString(source,"text/html");if(parsed.documentElement.lang)document.documentElement.lang=parsed.documentElement.lang;document.body.innerHTML=parsed.body.innerHTML;window.addEventListener("message",function(event){if(event.source!==window.parent||event.data?.type!=="a11ypilot-highlight"||typeof event.data.selector!=="string")return;try{const target=document.querySelector(event.data.selector);if(!target)return;target.scrollIntoView({block:"center",behavior:"smooth"});target.style.setProperty("outline","3px solid #a89dff","important");target.style.setProperty("outline-offset","3px","important");setTimeout(()=>{target.style.removeProperty("outline");target.style.removeProperty("outline-offset")},3500)}catch{}},false);`;
   const policy = `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; media-src data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:16px;background:#fff;color:#161922;font:14px/1.5 system-ui,sans-serif}</style></head><body></body><script nonce="${nonce}">${controller}</script></html>`;
 }
@@ -535,8 +561,8 @@ export function RepairWorkspacePage() {
       if (suggestion.proposedCode !== suggestion.originalCode) {
         try {
           const { artifact: sourceArtifact } = await getControlledArtifact(artifactId);
-          originalArtifactPreview = sourceArtifact.html;
-          proposedArtifactPreview = buildProposedArtifactPreview(sourceArtifact.html, suggestion);
+          originalArtifactPreview = combineArtifactCss(sourceArtifact.html, sourceArtifact.additionalCss);
+          proposedArtifactPreview = buildProposedArtifactPreview(sourceArtifact.html, suggestion, sourceArtifact.additionalCss);
           if (!proposedArtifactPreview) setPreviewError("The proposed element could not be matched to the controlled artifact, so its page preview is unavailable.");
         } catch {
           setPreviewError("The controlled artifact could not be loaded for a proposed preview. The code patch is still available for review.");
@@ -744,6 +770,7 @@ export function RepairWorkspacePage() {
         {["applied", "verified", "needs_review"].includes(repair.status) && <div className="repair-applied-block">
           <p className="repair-verified-label"><ShieldCheck size={15} /> Applied to controlled artifact · <strong>{repair.status === "verified" ? "Verified by rescan" : repair.status === "needs_review" ? "Needs review" : "Not verified"}</strong></p>
           {repair.demoContent && repair.contentHumanConfirmed !== true && <p className="repair-manual-warning" role="status"><CircleAlert size={15} /> The rescan checks that the accessibility rule no longer fails; the demo wording has not been human-confirmed as an accurate description.</p>}
+          {repair.demoContent && repair.contentHumanConfirmed === true && <p className="form-footer-note">You confirmed the demo wording during approval. A rescan verifies the accessibility rule result; it does not assess the wording's quality.</p>}
           <div className="repair-code-head"><h3>Before and after artifact preview</h3><button type="button" className="quiet-button" onClick={() => void copyCode(repair.updatedArtifact, "Updated artifact")}><ClipboardCheck size={14} /> Copy artifact</button></div>
           <div className="repair-preview-grid"><section><h4>Original page</h4><iframe title="Original artifact preview before repair" sandbox="allow-scripts" srcDoc={buildPreviewDocument(repair.originalArtifactPreview ?? repair.sourceArtifact ?? repair.rollbackArtifact ?? "")} className="audit-preview-frame" /></section><section><h4>Applied repair</h4><iframe title="Applied repair artifact preview" sandbox="allow-scripts" srcDoc={buildPreviewDocument(repair.updatedArtifact)} className="audit-preview-frame" /></section></div>
           {repairPreviewNote(repair) && <p className="repair-preview-note"><Info size={14} />{repairPreviewNote(repair)}</p>}

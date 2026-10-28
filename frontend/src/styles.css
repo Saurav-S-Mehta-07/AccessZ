@@ -634,6 +634,42 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .repair-preview-grid > section { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .repair-preview-grid h4 { margin: 0; padding: 9px 11px; color: var(--muted); font-size: 10px; font-weight: 650; }
 .repair-preview-grid .audit-preview-frame { height: 280px; border-top: 1px solid var(--border); }
+.fix-all-page { display: grid; gap: 18px; }
+.fix-all-source-panel, .fix-all-audit-panel, .fix-all-review-panel { min-width: 0; padding: 18px; }
+.fix-all-source-form { display: grid; gap: 14px; margin-top: 16px; }
+.fix-all-audit-panel > .repair-code-head { align-items: center; }
+.fix-all-capture-report, .fix-all-scan-comparison { margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.fix-all-capture-report p, .fix-all-scan-comparison p { display: flex; align-items: flex-start; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.fix-all-finding-row { margin: 8px 0; color: var(--text-soft); font-size: 12px; }
+.fix-all-finding-row span { color: var(--muted); }
+.fix-all-finding-row a { margin-left: 7px; color: var(--accent); font-size: 11px; }
+.fix-all-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.fix-all-code-grid { padding: 12px; }
+.fix-all-code-grid > section { min-width: 0; overflow: hidden; }
+.fix-all-code-grid h3 { color: var(--text-soft); font-size: 12px; }
+.fix-all-code-grid .repair-code { max-height: 360px; overflow: auto; white-space: pre; overflow-wrap: normal; }
+.fix-all-changes { display: grid; gap: 10px; margin: 14px 0; }
+.fix-all-changes > h3 { margin: 0; color: var(--text); font-size: 15px; }
+.fix-all-change-nav { display: flex; flex-wrap: wrap; gap: 7px; }
+.fix-all-change-nav a { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--accent); font-size: 11px; text-decoration: none; }
+.fix-all-change { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.fix-all-change > p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 5px 0; color: var(--muted); font-size: 12px; }
+.fix-all-change > p code { overflow-wrap: anywhere; }
+.fix-all-snippet-diff { display: grid; gap: 6px; min-width: 0; }
+.fix-all-snippet-diff pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fix-all-skipped { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 12px; }
+.fix-all-preview-section { margin-top: 18px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.fix-all-preview-section > .repair-code-head { padding: 12px; }
+.fix-all-preview-section .repair-code-head h3 { margin: 0; }
+.viewport-toggle { display: flex; gap: 5px; }
+.viewport-toggle button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 11px; cursor: pointer; }
+.viewport-toggle button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.fix-all-preview-grid { padding: 0 12px 12px; }
+.fix-all-preview-grid iframe { display: block; width: 100%; height: 360px; border: 0; border-top: 1px solid var(--border); background: white; }
+.fix-all-preview-grid.fix-all-viewport-mobile { grid-template-columns: repeat(2, minmax(250px, 390px)); justify-content: center; }
+.fix-all-actions { justify-content: flex-start; }
+.repair-diff-line-remove { border-left: 2px solid var(--red); }
+.repair-diff-line-add { border-left: 2px solid var(--green); }
 .repair-preview-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 14px 13px; color: var(--text-soft); font-size: 10px; line-height: 1.6; }
 .repair-preview-note svg { flex: 0 0 auto; margin-top: 2px; color: var(--cyan); }
 .repair-readable-diff { margin-top: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: #0c0f16; }

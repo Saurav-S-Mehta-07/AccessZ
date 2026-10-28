@@ -50,7 +50,7 @@ export class RepairService {
     const violation = audit.violations.find((item) => item.id === input.violationId);
     if (!violation) throw new RepairError("FINDING_NOT_FOUND", "This accessibility finding is not part of the selected audit.", 404);
     const artifactAudit = { ...audit, sourceType: "html", previewHtml: artifact.html };
-    const cssSource = input.cssSource ?? (audit.sourceType === "url" ? audit.additionalCss ?? "" : "");
+    const cssSource = input.cssSource ?? artifact.additionalCss ?? audit.additionalCss ?? audit.capturedCss ?? "";
     const finding = prepareFindingContext(artifactAudit, violation, input.nodeIndex, cssSource);
     const deterministic = () => deterministicProposal({
       ruleId: violation.id,
@@ -124,6 +124,7 @@ export class RepairService {
       artifactId: artifact.id,
       artifactVersion: artifact.version,
       artifactContentHash: createHash("sha256").update(artifact.html).digest("hex"),
+      additionalCss: artifact.additionalCss ?? "",
       baselineAuditId: audit.id,
       baselineSnapshot: freezeSnapshot(audit),
       violationId: violation.id,

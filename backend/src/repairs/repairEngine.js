@@ -28,6 +28,22 @@ function parseSingleElement(markup) {
   if (Buffer.byteLength(markup, "utf8") > MAX_PATCH_BYTES) {
     throw new RepairError("PATCH_TOO_LARGE", "The proposed patch is too large to review safely.");
   }
+  const trimmedMarkup = markup.trim();
+  if (/^<html(?:\s[^>]*)?>$/i.test(trimmedMarkup)) {
+    const parsedDocument = new JSDOM(`${trimmedMarkup}<head></head><body></body></html>`).window.document;
+    const documentElement = parsedDocument.documentElement;
+    parsedDocument.defaultView.close();
+    return documentElement;
+  }
+  if (/^<html(?:\s[^>]*)?>/i.test(trimmedMarkup)) {
+    if (!/^<html(?:\s[^>]*)?>[\s\S]*<\/html>$/i.test(trimmedMarkup)) {
+      throw new RepairError("UNSAFE_PATCH", "A document-language repair must contain exactly one complete html element.");
+    }
+    const parsedDocument = new JSDOM(trimmedMarkup).window.document;
+    const documentElement = parsedDocument.documentElement;
+    parsedDocument.defaultView.close();
+    return documentElement;
+  }
   const document = new JSDOM("<!doctype html><body></body>").window.document;
   const template = document.createElement("template");
   template.innerHTML = markup.trim();
@@ -56,6 +72,18 @@ function parseSingleElement(markup) {
   return element;
 }
 
+function htmlOpeningTag(element) {
+  const serialized = element.cloneNode(false).outerHTML;
+  return serialized.slice(0, serialized.indexOf(">") + 1);
+}
+
+function htmlOpeningTagFromMarkup(markup) {
+  const parsedDocument = new JSDOM(markup).window.document;
+  const openingTag = htmlOpeningTag(parsedDocument.documentElement);
+  parsedDocument.defaultView.close();
+  return openingTag;
+}
+
 function selectorElement(document, selector) {
   let matches;
   try {
@@ -69,13 +97,16 @@ function selectorElement(document, selector) {
   return matches[0];
 }
 
-function allowedAttributes(ruleId, tagName) {
+function allowedAttributes(ruleId, element) {
+  const { tagName } = element;
   if (ruleId === "image-alt" && tagName === "IMG") return new Set(["alt"]);
   if (ruleId === "label" && ["INPUT", "SELECT", "TEXTAREA"].includes(tagName)) {
     return new Set(["aria-label", "aria-labelledby"]);
   }
-  if (["button-name", "link-name"].includes(ruleId) && ["BUTTON", "A", "INPUT"].includes(tagName)) {
-    return new Set(tagName === "INPUT" ? ["aria-label", "value"] : ["aria-label"]);
+  const buttonControl = tagName === "BUTTON" || tagName === "INPUT" || element.getAttribute("role") === "button";
+  const linkControl = tagName === "A" || element.getAttribute("role") === "link";
+  if ((ruleId === "button-name" && buttonControl) || (ruleId === "link-name" && linkControl)) {
+    return new Set(tagName === "INPUT" ? ["aria-label", "value", "alt"] : ["aria-label"]);
   }
   if (ruleId === "color-contrast") return new Set(["style"]);
   if (["html-has-lang", "html-lang-valid"].includes(ruleId) && tagName === "HTML") return new Set(["lang"]);
@@ -102,7 +133,7 @@ function validateStyleChange(previous, next) {
   }
 }
 
-export function validateReplacement({ originalCode, proposedCode, ruleId, context = {} }) {
+export function validateReplacement({ originalCode, proposedCode, ruleId }) {
   if (originalCode.length >= 2_000) {
     throw new RepairError("SOURCE_TRUNCATED", "This element's source evidence is truncated and cannot be patched safely.");
   }
@@ -115,26 +146,20 @@ export function validateReplacement({ originalCode, proposedCode, ruleId, contex
       .map((node) => node.textContent.trim())
       .filter(Boolean)
       .join(" ");
-    const onlyWhitespaceOutsideControl = [...proposed.childNodes]
+    const onlyTextOutsideControl = [...proposed.childNodes]
       .filter((node) => node !== control[0])
-      .every((node) => node.nodeType === 3 && !node.textContent.trim());
+      .every((node) => node.nodeType === 3);
     if ([...proposed.attributes].some(({ name }) => name !== "for")
       || (proposed.hasAttribute("for") && proposed.getAttribute("for") !== original.getAttribute("id"))
       || (original.hasAttribute("id") && proposed.getAttribute("for") !== original.getAttribute("id"))
       || control.length !== 1
       || control[0].tagName !== original.tagName
       || control[0].outerHTML !== original.outerHTML
-      || !onlyWhitespaceOutsideControl
+      || !onlyTextOutsideControl
       || !labelText) {
       throw new RepairError("UNSAFE_PATCH", "A visible form label must wrap only the unchanged selected control and reference its existing ID when present.");
     }
     return proposed.outerHTML;
-  }
-  if (ruleId === "label" && ["INPUT", "SELECT", "TEXTAREA"].includes(original.tagName)
-    && proposed.tagName === original.tagName
-    && proposed.getAttribute("aria-label") !== original.getAttribute("aria-label")
-    && proposed.getAttribute("aria-label") !== context.nearbyLabelText) {
-    throw new RepairError("UNSAFE_PATCH", "An ARIA-only label may reuse only exact text from the nearby visible label.");
   }
   if (original.tagName !== proposed.tagName || original.innerHTML !== proposed.innerHTML) {
     const originalChildren = [...original.childNodes];
@@ -153,7 +178,7 @@ export function validateReplacement({ originalCode, proposedCode, ruleId, contex
     }
   }
 
-  const permitted = allowedAttributes(ruleId, original.tagName);
+  const permitted = allowedAttributes(ruleId, original);
   const previousAttributes = new Map([...original.attributes].map(({ name, value }) => [name, value]));
   const proposedAttributes = new Map([...proposed.attributes].map(({ name, value }) => [name, value]));
   for (const attribute of new Set([...previousAttributes.keys(), ...proposedAttributes.keys()])) {
@@ -167,7 +192,7 @@ export function validateReplacement({ originalCode, proposedCode, ruleId, contex
   if (proposedCode === originalCode) {
     throw new RepairError("NO_SAFE_PATCH", "No safe automatic change is available for this finding.");
   }
-  return proposed.outerHTML;
+  return ["html-has-lang", "html-lang-valid"].includes(ruleId) ? htmlOpeningTag(proposed) : proposed.outerHTML;
 }
 
 function cleanText(value, maximum = 300) {
@@ -294,10 +319,15 @@ export function prepareFindingContext(audit, violation, nodeIndex, cssSource = "
     document.defaultView.close();
     throw new RepairError("FINDING_NOT_PATCHABLE", "The affected element cannot be isolated safely for a local repair.", 422);
   }
-  if (target.outerHTML !== node.html) {
+  const documentLanguageFinding = ["html-has-lang", "html-lang-valid"].includes(violation.id) && target.tagName === "HTML";
+  const sourceMatches = documentLanguageFinding
+    ? /^<html\b/i.test(node.html) && htmlOpeningTagFromMarkup(node.html) === htmlOpeningTag(target)
+    : target.outerHTML === node.html;
+  if (!sourceMatches) {
     document.defaultView.close();
     throw new RepairError("SOURCE_CHANGED", "The finding source no longer matches the audited element. Run a fresh audit before repairing.");
   }
+  const repairTargetCode = documentLanguageFinding ? htmlOpeningTag(target) : node.html;
   const parent = target.parentElement;
   const contextHtml = parent?.outerHTML.slice(0, MAX_CONTEXT_BYTES) ?? target.outerHTML;
   const siblings = parent ? [...parent.children] : [];
@@ -384,7 +414,7 @@ export function prepareFindingContext(audit, violation, nodeIndex, cssSource = "
     impact: violation.impact,
     wcagTags: violation.wcagCriteria,
     description: cleanText(violation.description, 500),
-    element: target.outerHTML,
+    element: repairTargetCode,
     selector: node.selector,
     failureSummary: cleanText(node.failureSummary, 800),
     surroundingHtml: contextHtml,
@@ -400,8 +430,8 @@ export function prepareFindingContext(audit, violation, nodeIndex, cssSource = "
     ...(cssEvidence ? { cssEvidence } : {}),
   };
   document.defaultView.close();
-  const repairSelector = audit.sourceType === "html" ? node.selector : `body > ${target.tagName.toLowerCase()}`;
-  return { node, targetCode: node.html, context, nearbyLabelText, repairSelector };
+  const repairSelector = node.selector;
+  return { node, targetCode: repairTargetCode, context, nearbyLabelText, repairSelector };
 }
 
 function purposeCue(element) {
@@ -411,7 +441,6 @@ function purposeCue(element) {
     element.getAttribute("title"),
     element.id,
     element.className,
-    element.getAttribute("href"),
   ].filter(Boolean).join(" ").toLowerCase();
   const known = [
     [/\b(menu|navigation)\b/, "Open Menu", "Open menu"],
@@ -431,6 +460,15 @@ function purposeCue(element) {
   if (element.tagName === "A" && href && !/^(?:https?:)?\/\//i.test(href)) {
     const finalPart = href.split(/[/?#]/).filter(Boolean).at(-1);
     if (finalPart && /^[a-z0-9_-]+$/i.test(finalPart)) {
+      const action = {
+        menu: ["Open Menu", "Open menu"],
+        search: ["Search", "Search"],
+        close: ["Close", "Close"],
+        settings: ["Settings", "Settings"],
+        account: ["Account", "Account"],
+        profile: ["Profile", "Profile"],
+      }[finalPart.toLowerCase()];
+      if (action) return { visibleText: action[0], accessibleName: action[1], evidence: `href="${href}"` };
       const text = finalPart.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
       return { visibleText: text, accessibleName: text, evidence: `href="${href}"` };
     }
@@ -454,23 +492,41 @@ function readableFieldPurpose(element) {
 }
 
 function hasVisibleText(element) {
-  return Boolean(element.textContent.replace(/\s+/g, " ").trim());
+  return Boolean((element.tagName === "INPUT" ? element.value : element.textContent).replace(/\s+/g, " ").trim());
 }
 
 function hasAccessibleName(element) {
   return ["aria-label", "aria-labelledby", "title"].some((attribute) => element.getAttribute(attribute)?.trim());
 }
 
+function hasNamedChild(element) {
+  return [...element.querySelectorAll("img[alt], svg title")].some((child) => (
+    child.tagName === "IMG" ? Boolean(child.getAttribute("alt")?.trim()) : Boolean(child.textContent.trim())
+  ));
+}
+
+function isValidLanguageTag(value) {
+  if (!value?.trim()) return false;
+  try {
+    return Intl.getCanonicalLocales(value).length === 1;
+  } catch {
+    return false;
+  }
+}
+
 export function deterministicProposal({ ruleId, originalCode, nearbyLabelText, styleEvidence, cssEvidence, context = {} }) {
   if (["button-name", "link-name"].includes(ruleId)) {
     const element = parseSingleElement(originalCode);
-    const supportedTag = ruleId === "link-name" ? element.tagName === "A" : ["BUTTON", "A", "INPUT"].includes(element.tagName);
-    if (supportedTag && !hasAccessibleName(element) && !hasVisibleText(element)
-      && !element.querySelector("img[alt], svg title")) {
+    const supportedTag = ruleId === "link-name"
+      ? element.tagName === "A" || element.getAttribute("role") === "link"
+      : ["BUTTON", "A", "INPUT"].includes(element.tagName) || element.getAttribute("role") === "button";
+    if (supportedTag && !hasAccessibleName(element) && !hasVisibleText(element) && !hasNamedChild(element)) {
       const purpose = purposeCue(element);
-      const visibleText = purpose?.visibleText ?? (element.tagName === "A" ? "Demo link" : "Demo Menu");
-      const accessibleName = purpose?.accessibleName ?? (element.tagName === "A" ? "Demo link" : "Demo menu button");
-      if (element.tagName === "INPUT") element.setAttribute("value", visibleText);
+      const linkControl = ruleId === "link-name";
+      const visibleText = purpose?.visibleText ?? (linkControl ? "Demo link" : "Demo Menu");
+      const accessibleName = purpose?.accessibleName ?? (linkControl ? "Demo link" : "Demo menu button");
+      if (element.tagName === "INPUT" && element.type === "image") element.setAttribute("alt", visibleText);
+      else if (element.tagName === "INPUT") element.setAttribute("value", visibleText);
       else element.appendChild(element.ownerDocument.createTextNode(visibleText));
       element.setAttribute("aria-label", accessibleName);
       return {
@@ -555,11 +611,11 @@ export function deterministicProposal({ ruleId, originalCode, nearbyLabelText, s
 
   if (["html-has-lang", "html-lang-valid"].includes(ruleId)) {
     const documentElement = parseSingleElement(originalCode);
-    if (documentElement.tagName === "HTML" && !documentElement.getAttribute("lang")) {
+    if (documentElement.tagName === "HTML" && !isValidLanguageTag(documentElement.getAttribute("lang"))) {
       documentElement.setAttribute("lang", "en");
       return {
-        proposedCode: documentElement.outerHTML,
-        explanation: "Add a demo language tag; the document's actual language cannot be established from this finding alone.",
+        proposedCode: htmlOpeningTag(documentElement),
+        explanation: "Add a demo language tag because the document's actual language cannot be established from this finding alone.",
         accessibilityRationale: "A correct document language helps assistive technology pronounce and process page text accurately.",
         expectedVerificationCriteria: ["Replace the demo value with the document's actual primary language.", "Re-scan the controlled artifact and confirm the document-language finding is resolved."],
         assumptions: ["lang=\"en\" is demo content only; this document may use another language and must be reviewed before application."],
@@ -746,15 +802,34 @@ export function applyScopedReplacement(source, selector, originalCode, proposedC
   const replacement = validateReplacement({ originalCode, proposedCode, ruleId, context });
   const document = new JSDOM(source).window.document;
   const target = selectorElement(document, selector);
+  if (["html-has-lang", "html-lang-valid"].includes(ruleId) && target.tagName === "HTML") {
+    if (htmlOpeningTag(target) !== originalCode) {
+      document.defaultView.close();
+      throw new RepairError("SOURCE_CHANGED", "The document element changed after the suggestion was created. No source was changed.");
+    }
+    const lang = parseSingleElement(replacement).getAttribute("lang");
+    if (lang) target.setAttribute("lang", lang);
+    const updatedDocument = serializeHtmlDocument(document);
+    document.defaultView.close();
+    return updatedDocument;
+  }
   if (target.outerHTML !== originalCode) {
     document.defaultView.close();
     throw new RepairError("SOURCE_CHANGED", "The selected element changed after the suggestion was created. No patch was applied.");
   }
   const replacementElement = parseSingleElement(replacement).cloneNode(true);
   target.replaceWith(replacementElement);
-  const updated = document.documentElement.outerHTML;
+  const updated = serializeHtmlDocument(document);
   document.defaultView.close();
   return updated;
+}
+
+function serializeHtmlDocument(document) {
+  const doctype = document.doctype;
+  if (!doctype) return document.documentElement.outerHTML;
+  const publicId = doctype.publicId ? ` PUBLIC "${doctype.publicId}"` : "";
+  const systemId = doctype.systemId ? `${publicId ? "" : " SYSTEM"} "${doctype.systemId}"` : "";
+  return `<!DOCTYPE ${doctype.name}${publicId}${systemId}>${document.documentElement.outerHTML}`;
 }
 
 export const repairInputSchema = z.object({
@@ -777,5 +852,13 @@ export const controlledArtifactSchema = z.object({
     (value) => Buffer.byteLength(value, "utf8") <= 300_000,
     "HTML must be 300,000 bytes or fewer.",
   ),
+  additionalCss: z.string().max(MAX_PROVIDED_CSS_BYTES).optional().refine(
+    (value) => value === undefined || (Buffer.byteLength(value, "utf8") <= MAX_PROVIDED_CSS_BYTES
+      && !/@import\b|expression\s*\(|<\/style|javascript:/i.test(value)),
+    "Additional CSS must be 100,000 bytes or fewer and cannot contain active imports or script-like content.",
+  ),
   sourceAuditId: z.string().uuid().optional(),
-}).strict();
+}).strict().refine(
+  (value) => Buffer.byteLength(value.html, "utf8") + Buffer.byteLength(value.additionalCss ?? "", "utf8") <= 300_000,
+  "HTML and additional CSS must total 300,000 bytes or fewer.",
+);
