@@ -89,6 +89,27 @@ const contrastAudit = {
     }],
   }],
 };
+const buttonRepairAudit = {
+  ...audit,
+  violations: [{
+    id: "button-name",
+    impact: "critical",
+    description: "Buttons must have discernible text.",
+    help: "Buttons must have discernible text",
+    helpUrl: "https://example.test/button-name",
+    wcagCriteria: ["WCAG 2.1 A"],
+    nodeCount: 1,
+    nodesTruncated: false,
+    nodes: [{
+      selector: "nav > button",
+      targets: ["nav > button"],
+      html: '<button type="button"><svg aria-hidden="true" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"></path></svg></button>',
+      failureSummary: "Add an accessible name.",
+      relatedNodes: [],
+    }],
+  }],
+  previewHtml: '<nav><button type="button"><svg aria-hidden="true" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"></path></svg></button></nav>',
+};
 
 function response(payload, status = 200) {
   return {
@@ -108,6 +129,9 @@ function mockApi({
   repairs = [],
   suggestionSource = "deterministic",
   includeCssPatch = false,
+  unavailablePatch = false,
+  failSuggestion = false,
+  provisionalButton = false,
   verifications = [],
   verificationResult,
   unauthenticated = false,
@@ -134,6 +158,16 @@ function mockApi({
         version: 1,
         createdAt: audit.createdAt,
       }] }));
+    }
+    if (path.endsWith("/artifacts/artifact-123") && method === "GET") {
+      const selectedAudit = savedAudits.get(audit.id) ?? audit;
+      return Promise.resolve(response({ artifact: {
+        id: "artifact-123",
+        name: selectedAudit.projectName ?? selectedAudit.source,
+        auditId: selectedAudit.id,
+        html: selectedAudit.previewHtml,
+        version: 1,
+      } }));
     }
     if (path.endsWith("/auth/me")) {
       if (unauthenticated) return Promise.resolve(response({ error: { code: "AUTH_REQUIRED", message: "Sign in to access this resource." } }, 401));
@@ -184,7 +218,21 @@ function mockApi({
     }
     if (path.endsWith("/repairs/suggest") && method === "POST") {
       const requestPayload = JSON.parse(options.body);
+      if (failSuggestion) return Promise.resolve(response({ error: { code: "SUGGESTION_FAILED", message: "Repair provider unavailable. Try again later." } }, 503));
       const isContrast = requestPayload.violationId === "color-contrast";
+      const isButton = requestPayload.violationId === "button-name" && provisionalButton;
+      const originalCode = isContrast
+        ? '<p id="contrast-copy" class="copy">Readable text</p>'
+        : isButton
+          ? buttonRepairAudit.violations[0].nodes[0].html
+          : '<input id="email" type="email">';
+      const proposedCode = unavailablePatch
+        ? originalCode
+        : isContrast
+        ? '<p id="contrast-copy" class="copy" style="color: rgb(0, 0, 0);">Readable text</p>'
+        : isButton
+          ? '<button type="button" aria-label="REPLACE_WITH_DESCRIPTIVE_ACTION"><svg aria-hidden="true" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"></path></svg></button>'
+          : '<input id="email" type="email" aria-label="Contact">';
       const repair = {
         id: "repair-123",
         artifactId: "artifact-123",
@@ -193,16 +241,15 @@ function mockApi({
         auditId: audit.id,
         violationId: requestPayload.violationId,
         nodeIndex: 0,
-        selector: isContrast ? "#contrast-copy" : "#email",
-        originalCode: isContrast ? '<p id="contrast-copy" class="copy">Readable text</p>' : '<input id="email" type="email">',
-        proposedCode: isContrast
-          ? '<p id="contrast-copy" class="copy" style="color: rgb(0, 0, 0);">Readable text</p>'
-          : '<input id="email" type="email" aria-label="Contact">',
-        explanation: isContrast ? "Add a calculated text-color override." : "Use the adjacent visible label.",
-        accessibilityRationale: isContrast ? "The rendered text needs a higher contrast ratio." : "Provide an accessible name.",
-        assumptions: isContrast ? ["The override applies only to the controlled artifact."] : ["The adjacent visible label accurately describes the field."],
+        selector: isContrast ? "#contrast-copy" : isButton ? "nav > button" : "#email",
+        originalCode,
+        proposedCode,
+        explanation: isContrast ? "Add a calculated text-color override." : isButton ? "Add a provisional name for review." : "Use the adjacent visible label.",
+        accessibilityRationale: isContrast ? "The rendered text needs a higher contrast ratio." : isButton ? "Buttons need an accessible name." : "Provide an accessible name.",
+        assumptions: isContrast ? ["The override applies only to the controlled artifact."] : isButton ? ["Replace the placeholder with the real action."] : ["The adjacent visible label accurately describes the field."],
         manualReviewRequired: true,
-        applicable: true,
+        requiresHumanInput: isButton,
+        applicable: !unavailablePatch && !isButton,
         source: suggestionSource,
         status: "proposed",
         ...(includeCssPatch && isContrast ? {
@@ -415,6 +462,8 @@ describe("AccessZ audit workflow", () => {
 
   it("reviews, accepts, previews, and rolls back a repair from an actual finding", async () => {
     const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const auditSummary = { ...audit, summary: { ...audit.summary } };
     mockApi({ audits: [auditSummary], suggestionSource: "groq" });
     render(<App />);
@@ -424,6 +473,8 @@ describe("AccessZ audit workflow", () => {
       .find((element) => element.getAttribute("href")?.endsWith("/issues/label"));
     await user.click(labelIssueLink);
     await user.click(await screen.findByRole("link", { name: /prepare repair/i }));
+    expect(screen.queryByText(/existing repair suggestions/i)).not.toBeInTheDocument();
+    expect(document.querySelector(".repair-review")).toBeNull();
     expect(screen.queryByText("Controlled HTML artifact")).not.toBeInTheDocument();
     expect(screen.queryByText("Upload HTML")).not.toBeInTheDocument();
     expect(screen.queryByText("Use pasted HTML")).not.toBeInTheDocument();
@@ -435,6 +486,9 @@ describe("AccessZ audit workflow", () => {
 
     expect(await screen.findByText("Groq-generated suggestion")).toBeInTheDocument();
     expect(document.querySelector(".repair-code-proposed").textContent).toContain('aria-label="Contact"');
+    expect(await screen.findByTitle("Proposed repair preview, not applied")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /copy corrected code/i }));
+    expect(writeText).toHaveBeenCalledWith('<input id="email" type="email" aria-label="Contact">');
     await user.click(screen.getByRole("button", { name: /review patch/i }));
     const confirmation = screen.getByRole("dialog");
     const confirmButton = within(confirmation).getByRole("button", { name: "Approve & Apply Fix" });
@@ -448,6 +502,56 @@ describe("AccessZ audit workflow", () => {
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Roll back" }));
     expect(await screen.findByText(/Original source restored/)).toBeInTheDocument();
   }, 15_000);
+
+  it("keeps the corrected-code panel visible and disables copy when no safe patch exists", async () => {
+    const user = userEvent.setup();
+    mockApi({ audits: [audit], unavailablePatch: true });
+    render(<App />);
+    await user.click(await screen.findByRole("link", { name: "Repair workspace" }));
+    await user.click(await screen.findByRole("button", { name: /generate fix suggestion/i }));
+
+    expect(await screen.findByRole("heading", { name: "Review the HTML patch" })).toBeInTheDocument();
+    expect(document.querySelector(".repair-no-patch")).toHaveTextContent(/No code change was generated/);
+    expect(screen.getByRole("button", { name: /copy corrected code/i })).toBeDisabled();
+    expect(document.querySelector(".repair-diff > section .repair-code").textContent).toContain('<input id="email" type="email">');
+  });
+
+  it("shows a failure code panel and preserves the original finding when suggestion generation fails", async () => {
+    const user = userEvent.setup();
+    mockApi({ audits: [audit], failSuggestion: true });
+    render(<App />);
+    await user.click(await screen.findByRole("link", { name: "Repair workspace" }));
+    await user.click(await screen.findByRole("button", { name: /generate fix suggestion/i }));
+
+    expect(await screen.findByRole("heading", { name: "Suggestion unavailable" })).toBeInTheDocument();
+    expect(screen.getByText(/No corrected code was generated/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy corrected code/i })).toBeDisabled();
+    expect(document.querySelector(".evidence-html").textContent).toContain('<img id="sample-image" src="sample.png">');
+    expect(screen.getByRole("button", { name: /generate fix suggestion/i })).toBeEnabled();
+  });
+
+  it("shows and copies a provisional button-name patch without allowing it to be applied", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mockApi({ audits: [buttonRepairAudit], suggestionSource: "groq", provisionalButton: true });
+    render(<App />);
+    await user.click(await screen.findByRole("link", { name: "Repair workspace" }));
+    await user.click(await screen.findByRole("button", { name: /generate fix suggestion/i }));
+
+    expect(await screen.findByText("Groq-generated suggestion")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "BEFORE" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "AFTER · PROVISIONAL PATCH" })).toBeInTheDocument();
+    expect(document.querySelector(".repair-code-provisional").textContent).toContain("REPLACE_WITH_DESCRIPTIVE_ACTION");
+    expect(screen.getByText(/provisional patches cannot be applied or verified/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /review patch/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /copy original code/i }));
+    expect(writeText).toHaveBeenCalledWith(buttonRepairAudit.violations[0].nodes[0].html);
+    await user.click(screen.getByRole("button", { name: /copy corrected code/i }));
+    expect(writeText).toHaveBeenCalledWith('<button type="button" aria-label="REPLACE_WITH_DESCRIPTIVE_ACTION"><svg aria-hidden="true" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"></path></svg></button>');
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/repairs/repair-123/apply"))).toBe(false);
+  });
 
   it("submits optional CSS with the audit and keeps it off the Repair Copilot page", async () => {
     const user = userEvent.setup();
